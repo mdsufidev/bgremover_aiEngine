@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import logging
 from contextlib import asynccontextmanager
@@ -32,7 +33,10 @@ FREE_MAX_DIMENSION = 1080  # Free tier resolution cap: 1080x1080
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    model_name = "u2net"
+    # Default to u2netp (4MB lightweight model, fits in Render 512MB RAM without OOM)
+    # On environments with >1GB RAM, can be overridden via MODEL_NAME="u2net" or "birefnet-general"
+    model_name = os.getenv("MODEL_NAME", "u2netp")
+    logger.info(f"Using AI Model: '{model_name}' (Memory-optimized)")
     
     # Check for NVIDIA CUDA GPU Acceleration
     available_providers = ort.get_available_providers()
@@ -43,11 +47,17 @@ async def lifespan(app: FastAPI):
         providers = ["CPUExecutionProvider"]
         logger.info("⚡ Initializing model with CPUExecutionProvider...")
 
+    # Configure session options to keep memory strictly under 512MB on Render
+    sess_opts = ort.SessionOptions()
+    sess_opts.intra_op_num_threads = int(os.getenv("ORT_NUM_THREADS", "1"))
+    sess_opts.inter_op_num_threads = int(os.getenv("ORT_NUM_THREADS", "1"))
+    sess_opts.enable_cpu_mem_arena = False
+
     try:
-        session_holder["session"] = new_session(model_name, providers=providers)
+        session_holder["session"] = new_session(model_name, providers=providers, sess_opts=sess_opts)
         logger.info(f"Model '{model_name}' successfully pre-warmed in memory.")
     except Exception as e:
-        logger.error(f"Failed to load model '{model_name}': {str(e)}")
+        logger.error(f"Failed to load model '{model_name}' with custom options: {str(e)}")
         try:
             logger.info("Attempting fallback to CPU session...")
             session_holder["session"] = new_session(model_name, providers=["CPUExecutionProvider"])
